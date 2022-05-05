@@ -24,6 +24,30 @@ lazy_static! {
     };
 }
 
+#[allow(missing_debug_implementations)]
+#[allow(unused)]
+pub struct RnoteRenderer {
+    piet_gpu_instance: piet_gpu_hal::Instance,
+    piet_gpu_session: piet_gpu_hal::Session,
+}
+
+impl RnoteRenderer {
+    pub unsafe fn new() -> Self {
+        let (instance, _) = piet_gpu_hal::Instance::new(None, Default::default()).unwrap();
+        let device = instance.device(None).unwrap();
+        let session = piet_gpu_hal::Session::new(device);
+
+        Self {
+            piet_gpu_instance: instance,
+            piet_gpu_session: session,
+        }
+    }
+}
+
+lazy_static! {
+    pub static ref RNOTE_RENDERER: RnoteRenderer = unsafe { RnoteRenderer::new() };
+}
+
 pub const USVG_XML_OPTIONS: usvg::XmlOptions = usvg::XmlOptions {
     id_prefix: None,
     writer_opts: xmlwriter::Options {
@@ -587,6 +611,47 @@ impl Image {
             memory_format: ImageMemoryFormat::B8g8r8a8Premultiplied,
         })
     }
+
+    /// Renders an image with a function that draws onto a piet-gpu RenderContext
+    pub fn gen_with_piet_gpu(
+        mut draw_func: impl FnMut(&mut piet_gpu::PietGpuRenderContext) -> anyhow::Result<()>,
+        mut bounds: AABB,
+        image_scale: f64,
+    ) -> anyhow::Result<Self> {
+        bounds.ensure_positive();
+        bounds = bounds.ceil().loosened(1.0);
+        bounds.assert_valid()?;
+
+        let width_scaled = ((bounds.extents()[0]) * image_scale).round() as u32;
+        let height_scaled = ((bounds.extents()[1]) * image_scale).round() as u32;
+
+        let data = {
+            let mut piet_cx = piet_gpu::PietGpuRenderContext::new();
+
+            piet_cx.transform(kurbo::Affine::scale(image_scale));
+            piet_cx.transform(kurbo::Affine::translate(-bounds.mins.coords.to_kurbo_vec()));
+
+            // Apply the draw function
+            draw_func(&mut piet_cx)?;
+
+            piet_cx.finish().map_err(|e| {
+                anyhow::anyhow!(
+                    "piet_cx.finish() failed in image.gen_with_piet() with Err {}",
+                    e
+                )
+            })?;
+
+            piet_gpu_ctx_to_data(&mut piet_cx, width_scaled as usize, height_scaled as usize)
+        };
+
+        Ok(Image {
+            data,
+            rect: Rectangle::from_p2d_aabb(bounds),
+            pixel_width: width_scaled,
+            pixel_height: height_scaled,
+            memory_format: ImageMemoryFormat::B8g8r8a8Premultiplied,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -797,4 +862,37 @@ impl Svg {
 
         Ok(new_caironode)
     }
+}
+
+fn piet_gpu_ctx_to_data(
+    ctx: &mut piet_gpu::PietGpuRenderContext,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    let mut img_data: Vec<u8> = Default::default();
+    unsafe {
+        // this part is copied from bin/cli.rs
+        let session = &RNOTE_RENDERER.piet_gpu_session;
+        let mut renderer = piet_gpu::Renderer::new(session, width, height, 1).unwrap();
+        renderer.upload_render_ctx(ctx, 0).unwrap();
+
+        let mut cmd_buf = session.cmd_buf().unwrap();
+        let query_pool = session.create_query_pool(8).unwrap();
+        let image_usage = piet_gpu_hal::BufferUsage::MAP_READ | piet_gpu_hal::BufferUsage::COPY_DST;
+        let image_buf = session
+            .create_buffer((width * height * 4) as u64, image_usage)
+            .unwrap();
+        cmd_buf.begin();
+        renderer.record(&mut cmd_buf, &query_pool, 0);
+        cmd_buf.copy_image_to_buffer(&renderer.image_dev, &image_buf);
+        cmd_buf.finish_timestamps(&query_pool);
+        cmd_buf.host_barrier();
+        cmd_buf.finish();
+        let submitted = session.run_cmd_buf(cmd_buf, &[], &[]).unwrap();
+        submitted.wait().unwrap();
+        session.fetch_query_pool(&query_pool).unwrap();
+        image_buf.read(&mut img_data).unwrap();
+    }
+
+    img_data
 }

@@ -38,6 +38,8 @@ kurbo = {version = "0.8.2", features = ["serde"] }
 piet = { path = "../piet/piet", features = ["serde"]}
 piet-svg = { path = "../piet/piet-svg"}
 piet-cairo = { path = "../piet/piet-cairo"}
+piet-gpu = { path = "../piet-gpu/piet-gpu"}
+piet-gpu-hal = { path = "../piet-gpu/piet-gpu-hal"}
 image = "0.23.14"
 svg = "0.10.0"
 geo = "0.19.0"

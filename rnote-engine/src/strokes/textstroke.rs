@@ -550,7 +550,7 @@ impl StrokeBehaviour for TextStroke {
 
         if viewport.contains(&bounds) {
             Ok(GeneratedStrokeImages::Full(vec![
-                render::Image::gen_with_piet(
+                render::Image::gen_with_piet_gpu(
                     |piet_cx| self.draw(piet_cx, image_scale),
                     bounds,
                     image_scale,
@@ -558,7 +558,7 @@ impl StrokeBehaviour for TextStroke {
             ]))
         } else if let Some(intersection_bounds) = viewport.intersection(&bounds) {
             Ok(GeneratedStrokeImages::Partial {
-                images: vec![render::Image::gen_with_piet(
+                images: vec![render::Image::gen_with_piet_gpu(
                     |piet_cx| self.draw(piet_cx, image_scale),
                     intersection_bounds,
                     image_scale,
